@@ -2,16 +2,16 @@ import { useBridgeStore } from '@/store/bridgeStore'
 import { AlertTriangle, CheckCircle } from 'lucide-react'
 
 export default function SensorPanel() {
-  const sensorReadings = useBridgeStore((s) => s.sensorReadings)
+  const uiReadings = useBridgeStore((s) => s.uiReadings)
   const selectedSensor = useBridgeStore((s) => s.selectedSensor)
   const selectSensor = useBridgeStore((s) => s.selectSensor)
   const sensorHistory = useBridgeStore((s) => s.sensorHistory)
 
-  const readings = Array.from(sensorReadings.values()).sort((a, b) =>
+  const readings = [...uiReadings].sort((a, b) =>
     a.id.localeCompare(b.id, undefined, { numeric: true })
   )
 
-  const selectedReading = selectedSensor ? sensorReadings.get(selectedSensor) : null
+  const selectedReading = selectedSensor ? uiReadings.find((r) => r.id === selectedSensor) : null
   const selectedHist = selectedSensor ? sensorHistory.get(selectedSensor) : null
 
   return (

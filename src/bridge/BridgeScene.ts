@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { buildBridge, type BridgeMeshes, type BridgeParams } from './BridgeBuilder'
+import { getTensionBuffer, MAX_SUSPENDERS } from './tensionBuffer'
 
 export class BridgeScene {
   private renderer: THREE.WebGLRenderer
@@ -11,10 +12,13 @@ export class BridgeScene {
   private clock: THREE.Clock
   private animationId: number = 0
   private container: HTMLElement
-  private starField!: THREE.Points
+  private params: BridgeParams
+  private contextLost: boolean = false
+  private tensionAttrDirty: boolean = false
 
   constructor(container: HTMLElement, params: BridgeParams) {
     this.container = container
+    this.params = params
     this.clock = new THREE.Clock()
 
     this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false })
@@ -24,6 +28,9 @@ export class BridgeScene {
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping
     this.renderer.toneMappingExposure = 1.2
     container.appendChild(this.renderer.domElement)
+
+    this.renderer.domElement.addEventListener('webglcontextlost', this.onContextLost)
+    this.renderer.domElement.addEventListener('webglcontextrestored', this.onContextRestored)
 
     this.scene = new THREE.Scene()
     this.scene.fog = new THREE.FogExp2(0x0a0e17, 0.0015)
@@ -44,15 +51,69 @@ export class BridgeScene {
     this.controls.minDistance = 30
     this.controls.update()
 
-    this.setupLighting()
-    this.createStarField()
-    this.meshes = buildBridge(params)
-    this.scene.add(this.meshes.group)
-
-    this.setupOcean()
+    this.buildScene()
 
     window.addEventListener('resize', this.onResize)
     this.animate()
+  }
+
+  private buildScene(): void {
+    this.setupLighting()
+    this.createStarField()
+    this.meshes = buildBridge(this.params)
+    this.scene.add(this.meshes.group)
+    this.setupOcean()
+  }
+
+  private onContextLost = (e: Event): void => {
+    e.preventDefault()
+    this.contextLost = true
+    cancelAnimationFrame(this.animationId)
+    console.warn('[BridgeScene] WebGL context lost — suspending render loop')
+  }
+
+  private onContextRestored = (): void => {
+    this.contextLost = false
+    console.info('[BridgeScene] WebGL context restored — rebuilding scene')
+
+    this.disposeSceneObjects()
+    this.buildScene()
+    this.animate()
+  }
+
+  private disposeSceneObjects(): void {
+    const objs: THREE.Object3D[] = []
+    this.scene.traverse((child) => {
+      if (child instanceof THREE.Mesh || child instanceof THREE.InstancedMesh || child instanceof THREE.Points) {
+        if (child.geometry) child.geometry.dispose()
+        if (child.material) {
+          if (Array.isArray(child.material)) {
+            child.material.forEach((m) => m.dispose())
+          } else {
+            child.material.dispose()
+          }
+        }
+      }
+      objs.push(child)
+    })
+    this.scene.clear()
+  }
+
+  markTensionDirty(): void {
+    this.tensionAttrDirty = true
+  }
+
+  private syncTensionBuffer(): void {
+    if (!this.tensionAttrDirty) return
+    this.tensionAttrDirty = false
+
+    const buf = getTensionBuffer()
+    const attr = this.meshes.suspenderTensionAttr
+    const arr = attr.array as Float32Array
+    for (let i = 0; i < MAX_SUSPENDERS * 2; i++) {
+      arr[i] = buf[i]
+    }
+    attr.needsUpdate = true
   }
 
   private setupLighting(): void {
@@ -61,7 +122,6 @@ export class BridgeScene {
 
     const dirLight = new THREE.DirectionalLight(0xc8d8f0, 1.2)
     dirLight.position.set(100, 150, 80)
-    dirLight.castShadow = false
     this.scene.add(dirLight)
 
     const fillLight = new THREE.DirectionalLight(0x4488cc, 0.4)
@@ -88,8 +148,8 @@ export class BridgeScene {
     const geom = new THREE.BufferGeometry()
     geom.setAttribute('position', new THREE.BufferAttribute(positions, 3))
     const mat = new THREE.PointsMaterial({ color: 0x8899bb, size: 0.8, sizeAttenuation: true })
-    this.starField = new THREE.Points(geom, mat)
-    this.scene.add(this.starField)
+    const stars = new THREE.Points(geom, mat)
+    this.scene.add(stars)
   }
 
   private setupOcean(): void {
@@ -107,14 +167,8 @@ export class BridgeScene {
     this.scene.add(ocean)
   }
 
-  updateSuspenderTension(index: number, tensionRatio: number): void {
-    const mat = this.meshes.suspenderMaterials.get(index)
-    if (mat) {
-      mat.uniforms.uTensionRatio.value = tensionRatio
-    }
-  }
-
   private onResize = (): void => {
+    if (this.contextLost) return
     const w = this.container.clientWidth
     const h = this.container.clientHeight
     this.camera.aspect = w / h
@@ -123,12 +177,13 @@ export class BridgeScene {
   }
 
   private animate = (): void => {
+    if (this.contextLost) return
     this.animationId = requestAnimationFrame(this.animate)
-    const elapsed = this.clock.getElapsedTime()
 
-    for (const [, mat] of this.meshes.suspenderMaterials) {
-      mat.uniforms.uTime.value = elapsed
-    }
+    const elapsed = this.clock.getElapsedTime()
+    this.meshes.suspenderMaterial.uniforms.uTime.value = elapsed
+
+    this.syncTensionBuffer()
 
     this.controls.update()
     this.renderer.render(this.scene, this.camera)
@@ -151,7 +206,10 @@ export class BridgeScene {
 
   dispose(): void {
     window.removeEventListener('resize', this.onResize)
+    this.renderer.domElement.removeEventListener('webglcontextlost', this.onContextLost)
+    this.renderer.domElement.removeEventListener('webglcontextrestored', this.onContextRestored)
     cancelAnimationFrame(this.animationId)
+    this.disposeSceneObjects()
     this.renderer.dispose()
     if (this.container.contains(this.renderer.domElement)) {
       this.container.removeChild(this.renderer.domElement)

@@ -1,5 +1,7 @@
 import { useEffect, useRef, useCallback } from 'react'
 import { useBridgeStore } from '@/store/bridgeStore'
+import { setTensionRatio, setMicroStrain, MAX_SUSPENDERS } from '@/bridge/tensionBuffer'
+import { getScene } from '@/bridge/sceneManager'
 
 interface WSMessage {
   type: string
@@ -10,16 +12,24 @@ interface WSMessage {
   activeSensors?: number
 }
 
+const UI_THROTTLE_MS = 200
+
 export function useWebSocket(url: string) {
   const wsRef = useRef<WebSocket | null>(null)
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const frameCountRef = useRef(0)
   const lastFpsTimeRef = useRef(Date.now())
+  const lastUITimeRef = useRef(0)
+  const latestReadingsRef = useRef<{ id: string; microStrain: number; tensionRatio: number }[]>([])
 
   const setWsConnected = useBridgeStore((s) => s.setWsConnected)
   const setWsFrequency = useBridgeStore((s) => s.setWsFrequency)
-  const updateSensorReadings = useBridgeStore((s) => s.updateSensorReadings)
+  const updateUIReadings = useBridgeStore((s) => s.updateUIReadings)
   const setDataFrameRate = useBridgeStore((s) => s.setDataFrameRate)
+
+  const flushUI = useCallback(() => {
+    updateUIReadings(latestReadingsRef.current)
+  }, [updateUIReadings])
 
   const connect = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) return
@@ -38,10 +48,26 @@ export function useWebSocket(url: string) {
           const msg: WSMessage = JSON.parse(event.data)
 
           if (msg.type === 'sensor_data' && msg.sensors) {
-            updateSensorReadings(msg.sensors)
-            frameCountRef.current++
+            for (const s of msg.sensors) {
+              const idx = parseInt(s.id.replace('FBG-', ''), 10) - 1
+              if (idx >= 0 && idx < MAX_SUSPENDERS) {
+                setTensionRatio(idx, s.tensionRatio)
+                setMicroStrain(idx, s.microStrain)
+              }
+            }
+
+            const scene = getScene()
+            if (scene) scene.markTensionDirty()
+
+            latestReadingsRef.current = msg.sensors
 
             const now = Date.now()
+            if (now - lastUITimeRef.current >= UI_THROTTLE_MS) {
+              lastUITimeRef.current = now
+              flushUI()
+            }
+
+            frameCountRef.current++
             const elapsed = now - lastFpsTimeRef.current
             if (elapsed >= 1000) {
               setDataFrameRate(Math.round((frameCountRef.current * 1000) / elapsed))
@@ -70,7 +96,7 @@ export function useWebSocket(url: string) {
     } catch {
       reconnectTimer.current = setTimeout(() => connect(), 2000)
     }
-  }, [url, setWsConnected, setWsFrequency, updateSensorReadings, setDataFrameRate])
+  }, [url, setWsConnected, setWsFrequency, flushUI, setDataFrameRate])
 
   useEffect(() => {
     connect()

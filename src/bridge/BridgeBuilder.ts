@@ -1,5 +1,6 @@
 import * as THREE from 'three'
 import { solveCatenaryParam, catenaryY } from './catenary'
+import { INSTANCE_COUNT, MAX_SUSPENDERS } from './tensionBuffer'
 
 export interface BridgeParams {
   span: number
@@ -14,25 +15,28 @@ export interface BridgeMeshes {
   group: THREE.Group
   towers: THREE.Mesh[]
   mainCables: THREE.Mesh[]
-  suspenders: THREE.Mesh[]
+  suspenderInstance: THREE.InstancedMesh
+  suspenderTensionAttr: THREE.InstancedBufferAttribute
+  suspenderMaterial: THREE.ShaderMaterial
   deck: THREE.Mesh
-  suspenderMaterials: Map<number, THREE.ShaderMaterial>
 }
 
-const TENSION_VERTEX_SHADER = `
-  varying vec2 vUvCoord;
+const INSTANCE_VERTEX_SHADER = `
+  attribute float instanceTensionRatio;
+  varying float vTensionRatio;
   varying vec3 vNormalVec;
+
   void main() {
-    vUvCoord = uv;
+    vTensionRatio = instanceTensionRatio;
     vNormalVec = normalize(normalMatrix * normal);
-    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    vec4 mvPosition = modelViewMatrix * instanceMatrix * vec4(position, 1.0);
+    gl_Position = projectionMatrix * mvPosition;
   }
 `
 
-const TENSION_FRAGMENT_SHADER = `
-  uniform float uTensionRatio;
+const INSTANCE_FRAGMENT_SHADER = `
   uniform float uTime;
-  varying vec2 vUvCoord;
+  varying float vTensionRatio;
   varying vec3 vNormalVec;
 
   void main() {
@@ -40,7 +44,7 @@ const TENSION_FRAGMENT_SHADER = `
     vec3 warnColor = vec3(1.0, 0.85, 0.0);
     vec3 alertColor = vec3(1.0, 0.2, 0.27);
 
-    float r = clamp(uTensionRatio, 0.0, 1.0);
+    float r = clamp(vTensionRatio, 0.0, 1.0);
     vec3 color;
     if (r < 0.5) {
       color = mix(safeColor, warnColor, r * 2.0);
@@ -50,31 +54,19 @@ const TENSION_FRAGMENT_SHADER = `
 
     float pulse = 1.0 + 0.18 * sin(uTime * 5.0) * step(0.6, r);
 
-    float rim = 1.0 - max(0.0, dot(vNormalVec, vec3(0.0, 0.0, 1.0)));
-    color += rim * 0.15;
+    vec3 viewDir = normalize(cameraPosition - vNormalVec);
+    float rim = 1.0 - max(0.0, abs(dot(normalize(vNormalVec), vec3(0.0, 0.0, 1.0))));
+    color += rim * 0.12;
 
     gl_FragColor = vec4(color * pulse, 1.0);
   }
 `
-
-export function createTensionMaterial(): THREE.ShaderMaterial {
-  return new THREE.ShaderMaterial({
-    vertexShader: TENSION_VERTEX_SHADER,
-    fragmentShader: TENSION_FRAGMENT_SHADER,
-    uniforms: {
-      uTensionRatio: { value: 0.0 },
-      uTime: { value: 0.0 },
-    },
-  })
-}
 
 export function buildBridge(params: BridgeParams): BridgeMeshes {
   const { span, towerHeight, sag, deckWidth, deckY, suspenderCount } = params
   const group = new THREE.Group()
   const towers: THREE.Mesh[] = []
   const mainCables: THREE.Mesh[] = []
-  const suspenders: THREE.Mesh[] = []
-  const suspenderMaterials = new Map<number, THREE.ShaderMaterial>()
 
   const a = solveCatenaryParam(span, sag)
 
@@ -113,32 +105,49 @@ export function buildBridge(params: BridgeParams): BridgeMeshes {
   group.add(cableBack)
   mainCables.push(cableBack)
 
+  const baseSuspenderGeom = new THREE.CylinderGeometry(0.15, 0.15, 1, 6, 1)
+  baseSuspenderGeom.translate(0, 0.5, 0)
+
+  const tensionData = new Float32Array(INSTANCE_COUNT)
+  const tensionAttr = new THREE.InstancedBufferAttribute(tensionData, 1)
+  tensionAttr.setUsage(THREE.DynamicDrawUsage)
+
+  const suspenderMat = new THREE.ShaderMaterial({
+    vertexShader: INSTANCE_VERTEX_SHADER,
+    fragmentShader: INSTANCE_FRAGMENT_SHADER,
+    uniforms: {
+      uTime: { value: 0.0 },
+    },
+  })
+
+  const suspenderInstance = new THREE.InstancedMesh(
+    baseSuspenderGeom,
+    suspenderMat,
+    INSTANCE_COUNT
+  )
+  suspenderInstance.geometry.setAttribute('instanceTensionRatio', tensionAttr)
+
+  const dummy = new THREE.Matrix4()
   const suspenderStep = span / (suspenderCount + 1)
+  const zFront = deckWidth / 2 - 1
+  const zBack = -(deckWidth / 2 - 1)
+
   for (let i = 0; i < suspenderCount; i++) {
     const x = -span / 2 + suspenderStep * (i + 1)
     const yCable = catenaryY(x, a) + deckY
     const length = yCable - deckY
 
-    const points = [
-      new THREE.Vector3(0, 0, 0),
-      new THREE.Vector3(0, length, 0),
-    ]
-    const suspenderCurve = new THREE.CatmullRomCurve3(points)
-    const suspenderGeom = new THREE.TubeGeometry(suspenderCurve, 2, 0.15, 6, false)
+    dummy.makeScale(1, Math.max(0.1, length), 1)
+    dummy.setPosition(x, deckY, zFront)
+    suspenderInstance.setMatrixAt(i, dummy)
 
-    const mat = createTensionMaterial()
-    suspenderMaterials.set(i, mat)
-
-    for (const zOff of [deckWidth / 2 - 1, -(deckWidth / 2 - 1)]) {
-      const mesh = new THREE.Mesh(suspenderGeom.clone(), zOff > 0 ? mat : mat.clone())
-      mesh.position.set(x, deckY, zOff)
-      group.add(mesh)
-      suspenders.push(mesh)
-      if (zOff < 0) {
-        suspenderMaterials.set(i + suspenderCount, mesh.material as THREE.ShaderMaterial)
-      }
-    }
+    dummy.makeScale(1, Math.max(0.1, length), 1)
+    dummy.setPosition(x, deckY, zBack)
+    suspenderInstance.setMatrixAt(i + MAX_SUSPENDERS, dummy)
   }
+
+  suspenderInstance.instanceMatrix.needsUpdate = true
+  group.add(suspenderInstance)
 
   const deckGeom = new THREE.BoxGeometry(span + 10, 1.5, deckWidth)
   const deckMat = new THREE.MeshStandardMaterial({ color: 0x2d3748, metalness: 0.3, roughness: 0.7 })
@@ -154,7 +163,7 @@ export function buildBridge(params: BridgeParams): BridgeMeshes {
     group.add(rail)
   }
 
-  return { group, towers, mainCables, suspenders, deck, suspenderMaterials }
+  return { group, towers, mainCables, suspenderInstance, suspenderTensionAttr: tensionAttr, suspenderMaterial: suspenderMat, deck }
 }
 
 function createTowerGeometry(height: number, widthBottom: number, widthTop: number): THREE.BufferGeometry {
