@@ -75,14 +75,12 @@ export class BridgeScene {
   private onContextRestored = (): void => {
     this.contextLost = false
     console.info('[BridgeScene] WebGL context restored — rebuilding scene')
-
     this.disposeSceneObjects()
     this.buildScene()
     this.animate()
   }
 
   private disposeSceneObjects(): void {
-    const objs: THREE.Object3D[] = []
     this.scene.traverse((child) => {
       if (child instanceof THREE.Mesh || child instanceof THREE.InstancedMesh || child instanceof THREE.Points) {
         if (child.geometry) child.geometry.dispose()
@@ -94,13 +92,18 @@ export class BridgeScene {
           }
         }
       }
-      objs.push(child)
     })
     this.scene.clear()
   }
 
   markTensionDirty(): void {
     this.tensionAttrDirty = true
+  }
+
+  setDeckModeAmplitudes(mode1: number, mode2: number): void {
+    if (!this.meshes) return
+    this.meshes.deckMaterial.uniforms.uMode1Amplitude.value = mode1
+    this.meshes.deckMaterial.uniforms.uMode2Amplitude.value = mode2
   }
 
   private syncTensionBuffer(): void {
@@ -182,6 +185,7 @@ export class BridgeScene {
 
     const elapsed = this.clock.getElapsedTime()
     this.meshes.suspenderMaterial.uniforms.uTime.value = elapsed
+    this.meshes.deckMaterial.uniforms.uTime.value = elapsed
 
     this.syncTensionBuffer()
 

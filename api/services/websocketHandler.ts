@@ -1,18 +1,24 @@
 import { WebSocketServer, WebSocket } from 'ws';
 import type { Server } from 'http';
-import { createSensors, simulateReading, type FBGSensor, type SensorReading } from './fbgSimulator.js';
-
-interface ClientState {
-  ws: WebSocket;
-  subscribedSensors: Set<string>;
-}
+import { createSensors, simulateReading, type SensorReading } from './fbgSimulator.js';
+import {
+  createAccelerometers,
+  simulateAccelerometer,
+  cycleTyphoon,
+  type Accelerometer,
+  type AccelerometerSample,
+} from './accelerometerSimulator.js';
 
 export function setupWebSocket(server: Server, sensorCount: number): void {
   const wss = new WebSocketServer({ server, path: '/ws' });
   const sensors = createSensors(sensorCount);
-  const clients = new Map<WebSocket, ClientState>();
+  const accelerometers = createAccelerometers(10, 200, 16);
+  const clients = new Map<WebSocket, {}>();
   let intervalId: ReturnType<typeof setInterval> | null = null;
   let frequency = 50;
+  let accBuffer: AccelerometerSample[][] = [];
+  const ACC_SAMPLE_RATE = 200;
+  const ACC_BATCH_SIZE = 4;
 
   function broadcast(data: object): void {
     const payload = JSON.stringify(data);
@@ -30,13 +36,29 @@ export function setupWebSocket(server: Server, sensorCount: number): void {
 
     intervalId = setInterval(() => {
       const t = Date.now() / 1000 - startTime;
+
+      cycleTyphoon(t);
+
       const readings: SensorReading[] = sensors.map((s) => simulateReading(s, t));
 
-      broadcast({
+      const accReadings: AccelerometerSample[] = accelerometers.map((acc) =>
+        simulateAccelerometer(acc, t, 200)
+      );
+      accBuffer.push(accReadings);
+
+      const payload: Record<string, unknown> = {
         type: 'sensor_data',
         timestamp: Date.now(),
         sensors: readings,
-      });
+      };
+
+      if (accBuffer.length >= ACC_BATCH_SIZE) {
+        payload.type = 'sensor_data';
+        (payload as Record<string, unknown>).accelerometer = accBuffer;
+        accBuffer = [];
+      }
+
+      broadcast(payload);
     }, intervalMs);
   }
 
@@ -48,11 +70,7 @@ export function setupWebSocket(server: Server, sensorCount: number): void {
   }
 
   wss.on('connection', (ws) => {
-    const clientState: ClientState = {
-      ws,
-      subscribedSensors: new Set(sensors.map((s) => s.id)),
-    };
-    clients.set(ws, clientState);
+    clients.set(ws, {});
 
     ws.send(
       JSON.stringify({
@@ -86,5 +104,3 @@ export function setupWebSocket(server: Server, sensorCount: number): void {
 
   startStreaming();
 }
-
-export { type FBGSensor, type SensorReading };

@@ -1,6 +1,7 @@
 import BridgeCanvas from '@/components/BridgeCanvas'
 import HUDOverlay from '@/components/HUDOverlay'
 import SensorPanel from '@/components/SensorPanel'
+import ResonancePanel from '@/components/ResonancePanel'
 import { useWebSocket } from '@/hooks/useWebSocket'
 
 const WS_URL = `ws://${window.location.hostname}:3001/ws`
@@ -13,6 +14,7 @@ export default function Home() {
       <BridgeCanvas />
       <SensorPanel />
       <HUDOverlay />
+      <ResonancePanel />
 
       <div className="fixed top-4 left-1/2 -translate-x-1/2 z-30 pointer-events-none">
         <div className="text-center">

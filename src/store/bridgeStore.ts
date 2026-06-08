@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import type { ModeAnalysis } from '@/bridge/fft'
 
 export interface SensorReading {
   id: string
@@ -13,12 +14,16 @@ interface BridgeState {
   selectedSensor: string | null
   uiReadings: SensorReading[]
   sensorHistory: Map<string, { time: number; value: number }[]>
+  modeAnalysis: ModeAnalysis | null
+  mode1Amplitude: number
+  mode2Amplitude: number
 
   setWsConnected: (connected: boolean) => void
   setWsFrequency: (freq: number) => void
   setDataFrameRate: (rate: number) => void
   selectSensor: (id: string | null) => void
   updateUIReadings: (readings: SensorReading[]) => void
+  updateResonanceState: (analysis: ModeAnalysis | null, m1: number, m2: number) => void
 }
 
 const MAX_HISTORY = 500
@@ -30,6 +35,9 @@ export const useBridgeStore = create<BridgeState>((set) => ({
   selectedSensor: null,
   uiReadings: [],
   sensorHistory: new Map(),
+  modeAnalysis: null,
+  mode1Amplitude: 0,
+  mode2Amplitude: 0,
 
   setWsConnected: (connected) => set({ wsConnected: connected }),
   setWsFrequency: (freq) => set({ wsFrequency: freq }),
@@ -51,4 +59,7 @@ export const useBridgeStore = create<BridgeState>((set) => ({
       }
       return { uiReadings: readings, sensorHistory: newHistory }
     }),
+
+  updateResonanceState: (analysis, m1, m2) =>
+    set({ modeAnalysis: analysis, mode1Amplitude: m1, mode2Amplitude: m2 }),
 }))
